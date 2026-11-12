@@ -27,7 +27,7 @@ Lrg curl - 3x12 35кг
 const r = P.parseText(text, '2026-11-12');
 assert.strictEqual(r.errors.length, 0, JSON.stringify(r.errors));
 assert.strictEqual(r.days.length, 3);
-assert.deepStrictEqual(r.days.map(d=>[d.d,d.t,d.ex.length]), [['2026-11-04','Среда',5],['2026-11-07','Птяница',6],['2026-11-08','Воскресенье',8]]);
+assert.deepStrictEqual(r.days.map(d=>[d.d,d.t,d.ex.length]), [['2026-11-04','Среда',5],['2026-11-06','Птяница',6],['2026-11-08','Воскресенье',8]]);
 const ex = (di, i) => r.days[di].ex[i];
 assert.deepStrictEqual(ex(0,1).s, [[19,20],[10,15],[10,15]]);
 assert.strictEqual(ex(0,1).n, 'Жим лежа(30°)');
@@ -50,4 +50,6 @@ assert.strictEqual(P.parseExercise('Планка - 3х60 с паузой').c, '�
 const r2 = P.parseText('Ноги\nПрисед - 5х5 60кг\nерунда 1 2 x', '2026-11-12');
 assert.strictEqual(r2.days[0].t, 'Ноги'); assert.strictEqual(r2.days[0].d, '2026-11-12');
 assert.strictEqual(P.weekday('2026-11-12'), 'Четверг');
+assert.strictEqual(r.days[1].orig, '2026-11-07');
+assert.strictEqual(P.weekdayFromTitle('Птяница'), 5); assert.strictEqual(P.weekdayFromTitle('Пресс'), null); assert.strictEqual(P.weekdayFromTitle('Ноги'), null);
 console.log('\nOK, errors2=', r2.errors);

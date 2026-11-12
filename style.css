@@ -145,3 +145,26 @@ table.t td:first-child { white-space: nowrap; color: var(--hint); width: 1%; }
 .toast.on { opacity: 1; transform: translateX(-50%) translateY(0); }
 .empty { text-align: center; color: var(--hint); padding: 24px 10px; }
 .err { color: var(--danger); font-size: 13px; white-space: pre-wrap; }
+
+/* неделя и план */
+.week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 10px; }
+.wk { background: var(--card); border-radius: 12px; padding: 6px 0 7px; display: flex; flex-direction: column; align-items: center; gap: 1px; }
+.wk small { font-size: 11px; color: var(--hint); }
+.wk b { font-size: 16px; font-weight: 600; }
+.wk i { width: 7px; height: 7px; border-radius: 50%; margin-top: 2px; border: 1.5px solid transparent; }
+.wk.k-plan i { border-color: var(--accent); }
+.wk.k-plan.done i { background: var(--accent); }
+.wk.k-extra i { border-color: var(--ok); }
+.wk.k-extra.done i { background: var(--ok); }
+.wk.k-moved i { width: 10px; height: 2px; border: 0; border-radius: 1px; background: var(--hint); margin-top: 4px; margin-bottom: 3px; }
+.wk.today b { color: var(--link); }
+.wk.sel { background: var(--accent); }
+.wk.sel small, .wk.sel b { color: var(--accent-text); }
+.wk.sel.k-plan i, .wk.sel.k-extra i { border-color: var(--accent-text); }
+.wk.sel.done i { background: var(--accent-text); }
+.center { text-align: center; padding: 22px 14px; }
+.big-ico { font-size: 38px; margin-bottom: 4px; }
+.banner { background: var(--soft); color: var(--link); border-radius: 10px; padding: 8px 12px; font-size: 14px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.link { color: var(--link); font-weight: 600; text-decoration: underline; padding: 0; }
+.ex-head small { color: var(--hint); }
+.ex.todo .ex-name { color: color-mix(in srgb, var(--text) 75%, var(--hint)); }

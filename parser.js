@@ -72,6 +72,15 @@
 
   const HEADER = /^\[?(\d{1,2})\.(\d{1,2})\.(\d{4})(?:[ ,]+\d{1,2}:\d{2}(?::\d{2})?)?\]?\s*(?:[^:\d\n]{1,40}:\s*)?(.*)$/;
 
+  // «Среда», «птяница», «Вс» -> номер дня недели (0 = воскресенье) или null
+  const WD_RE = [/^(вс|воскр)/, /^(пн|понед)/, /^(вт|втор)/, /^(ср|сред)/, /^(чт|четв)/, /^(пя?т|птн)/, /^(сб|суб)/];
+  function weekdayFromTitle(t) {
+    t = String(t || '').trim().toLowerCase();
+    if (!t || t.length > 15 || /\s|\d/.test(t)) return null;
+    for (let i = 0; i < 7; i++) if (WD_RE[i].test(t)) return i;
+    return null;
+  }
+
   // Весь текст (можно несколько сообщений подряд). Возвращает {days:[{d,t,ex}], errors:[строки]}
   function parseText(text, defaultDate) {
     const days = [];
@@ -84,8 +93,16 @@
       if (!line) continue;
       const h = HEADER.exec(line);
       if (h) {
-        const d = h[3] + '-' + pad(h[2]) + '-' + pad(h[1]);
+        let d = h[3] + '-' + pad(h[2]) + '-' + pad(h[1]);
         const rest = h[4].trim();
+        // заголовок — день недели, а сообщение отправлено позже (например, «Пятница» в субботу) -> берём этот день
+        const wd = weekdayFromTitle(rest);
+        if (wd != null && wd !== fromISO(d).getDay()) {
+          const orig = d;
+          d = addDays(d, -((fromISO(d).getDay() - wd + 7) % 7));
+          startDay(d, rest); cur.orig = orig;
+          continue;
+        }
         const ex = rest ? parseExercise(rest) : null;
         if (ex) { startDay(d, ''); cur.ex.push(ex); }
         else startDay(d, rest);
@@ -138,7 +155,7 @@
 
   const api = {
     WEEKDAYS, today, addDays, weekday, fmtDate, fmtShort, fromISO, toISO, fmtNum,
-    parseSpec, parseExercise, parseText, formatSets, formatExercise, formatDay,
+    parseSpec, parseExercise, parseText, weekdayFromTitle, formatSets, formatExercise, formatDay,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.GymParser = api;

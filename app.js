@@ -25,7 +25,7 @@
   const S = {
     tab: 'w', date: P.today(), hist: 'list', histN: 30, statEx: null, statMetric: 'w',
     sheet: null, fd: null, fEdit: null, source: 'local', loadError: null, out: '',
-    w: {}, f: {}, lib: [], set: Object.assign({}, DEF_SET),
+    w: {}, f: {}, lib: [], set: Object.assign({}, DEF_SET), plan: { days: {} }, pd: null,
   };
 
   // ---------- Telegram helpers ----------
@@ -63,7 +63,7 @@
   window.addEventListener('pagehide', flushAll);
 
   const monthKey = (type, d) => type + '_' + d.slice(0, 4) + d.slice(5, 7);
-  const wEmpty = (day) => !day || (!day.t && !day.ex.length);
+  const wEmpty = (day) => !day || (!day.t && !day.ex.length && !day.x && !day.mv && !day.from);
   const fEmpty = (day) => !day || !day.items.length;
   function saveDay(type, d) {
     const ym = d.slice(0, 7);
@@ -139,29 +139,157 @@
     return `<div class="bar${v >= max && max > 0 ? ' over' : ''}"><div style="width:${pct.toFixed(1)}%"></div></div>`;
   }
 
+  // ---------- План и расписание ----------
+  const WD_ORDER = [1, 2, 3, 4, 5, 6, 0];
+  const WD_SHORT = ['Вс', 'Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб'];
+  const WD_EVERY = ['каждое воскресенье', 'каждый понедельник', 'каждый вторник', 'каждую среду', 'каждый четверг', 'каждую пятницу', 'каждую субботу'];
+  const WD_TITLE = /^(пн|вт|ср|чт|пя?т|сб|вс|понед|втор|сред|четв|суб|воскр)/i;
+  const wdOf = (d) => P.fromISO(d).getDay();
+  const hasSets = (day) => !!day && day.ex.some((e) => e.s.length);
+  const planEmpty = () => !Object.keys(S.plan.days).length;
+  const savePlan = () => schedule('plan', () => (planEmpty() ? null : S.plan));
+  function relDay(x) {
+    const t = P.today();
+    return x === t ? ' · сегодня' : x === P.addDays(t, -1) ? ' · вчера' : x === P.addDays(t, 1) ? ' · завтра' : '';
+  }
+  const dayLabel = (d) => WD_SHORT[wdOf(d)] + ', ' + P.fmtShort(d);
+
+  // план, который действует в этот день (с учётом переносов)
+  function planOf(d) {
+    const day = S.w[d];
+    if (day && day.mv) return null;
+    const wd = day && day.from ? wdOf(day.from) : wdOf(d);
+    const p = S.plan.days[wd];
+    return p ? { wd, p } : null;
+  }
+  // moved — тренировку унесли на другой день; plan — по плану; extra — вне плана; rest — отдых
+  function dayKind(d) {
+    const day = S.w[d];
+    if (day && day.mv) return 'moved';
+    if (planOf(d)) return 'plan';
+    if (day && (day.x || day.ex.length)) return 'extra';
+    return 'rest';
+  }
+  const isFree = (d) => dayKind(d) === 'rest' && !(S.w[d] && S.w[d].from);
+
+  // строки упражнений дня: сначала план (в его порядке), потом добавленные вне плана
+  function rows(d) {
+    const day = S.w[d] || { ex: [] }, pl = planOf(d), out = [], used = new Set();
+    if (pl) for (const n of pl.p.ex) {
+      const i = day.ex.findIndex((e, k) => !used.has(k) && norm(e.n) === norm(n));
+      if (i >= 0) used.add(i);
+      out.push({ e: i >= 0 ? day.ex[i] : { n, s: [], c: '' }, i, plan: true });
+    }
+    day.ex.forEach((e, i) => { if (!used.has(i)) out.push({ e, i, plan: false }); });
+    return out;
+  }
+  function ensureEx(d, n) {
+    const day = wDay(d, true);
+    const i = day.ex.findIndex((e) => norm(e.n) === norm(n));
+    if (i >= 0) return i;
+    const pl = planOf(d);
+    if (pl && !day.t && pl.p.t) day.t = pl.p.t;
+    day.ex.push({ n, s: [], c: '' });
+    return day.ex.length - 1;
+  }
+
+  // план из тренировок: по последней тренировке на каждый день недели
+  function planFromDates(dates) {
+    const days = {};
+    for (const d of dates.slice().sort()) {
+      const day = S.w[d];
+      if (!hasSets(day) || day.x) continue;
+      const wd = day.from ? wdOf(day.from) : wdOf(d);
+      const seen = new Set(), ex = [];
+      for (const e of day.ex) if (e.s.length && !seen.has(norm(e.n))) { seen.add(norm(e.n)); ex.push(e.n); }
+      days[wd] = { t: WD_TITLE.test(day.t || '') ? '' : (day.t || ''), ex };
+    }
+    return days;
+  }
+  function lastWeekDates(dates) {
+    const ds = dates.filter((d) => hasSets(S.w[d])).sort();
+    if (!ds.length) return [];
+    const from = P.addDays(ds[ds.length - 1], -6);
+    return ds.filter((d) => d >= from);
+  }
+
+  // перенос тренировки src -> dst (dst должен быть свободным днём либо исходным днём тренировки)
+  function moveWorkout(src, dst) {
+    const s = wDay(src, true), t = wDay(dst, true);
+    const origin = s.from || src;
+    for (const e of s.ex) t.ex.push(e);
+    s.ex = [];
+    if (!t.t && s.t) t.t = s.t;
+    s.t = '';
+    delete s.from;
+    delete t.x;
+    const o = wDay(origin, true);
+    if (dst === origin) { delete o.mv; delete t.from; }
+    else { o.mv = dst; t.from = origin; }
+    for (const x of new Set([src, dst, origin])) saveDay('w', x);
+  }
+
+  function weekStrip() {
+    const d = S.date, mon = P.addDays(d, -((wdOf(d) + 6) % 7)), t = P.today();
+    let h = '<div class="week">';
+    for (let i = 0; i < 7; i++) {
+      const x = P.addDays(mon, i);
+      const cls = ['wk', 'k-' + dayKind(x), hasSets(S.w[x]) ? 'done' : '', x === d ? 'sel' : '', x === t ? 'today' : ''].join(' ');
+      h += `<button class="${cls}" data-act="goday" data-d="${x}"><small>${WD_SHORT[wdOf(x)]}</small><b>${+x.slice(8)}</b><i></i></button>`;
+    }
+    return h + '</div>';
+  }
+
   // ---------- Тренировка ----------
   function vWorkout() {
-    const d = S.date, day = wDay(d) || { t: '', ex: [] };
-    let h = dateBar();
-    h += `<input class="title-in" id="wTitle" placeholder="${esc(P.weekday(d))}" value="${esc(day.t)}" autocomplete="off">`;
-    day.ex.forEach((e, i) => {
+    const d = S.date, day = S.w[d], kind = dayKind(d), pl = planOf(d);
+    let h = dateBar() + weekStrip();
+
+    if (kind === 'moved') {
+      return h + `<div class="card center"><div class="big-ico">↪️</div><b>Тренировка перенесена</b>
+        <div class="hint">на ${dayLabel(day.mv)}${relDay(day.mv)}</div>
+        <div class="row mt"><button class="btn ghost" data-act="goday" data-d="${day.mv}">Открыть</button>
+        <button class="btn ghost" data-act="unmove" data-d="${day.mv}">Вернуть обратно</button></div></div>`;
+    }
+    if (kind === 'rest') {
+      return h + `<div class="card center"><div class="big-ico">🛌</div><b>День отдыха</b>
+        <div class="hint">${planEmpty() ? 'План тренировок пока не задан' : 'По плану в этот день тренировки нет'}</div>
+        <button class="btn mt" style="width:100%" data-act="markx">＋ Отметить тренировку вне плана</button>
+        ${planEmpty() ? '<button class="btn ghost mt" style="width:100%" data-act="goplan">Настроить план на неделю</button>' : ''}
+      </div>`;
+    }
+
+    const ph = pl ? (pl.p.t || P.WEEKDAYS[pl.wd]) : P.weekday(d);
+    h += `<input class="title-in" id="wTitle" placeholder="${esc(ph)}" value="${esc(day ? day.t : '')}" autocomplete="off">`;
+    if (kind === 'plan' && day && day.from) {
+      h += `<div class="banner"><span>↪️ Перенесено с ${dayLabel(day.from)}</span><button class="link" data-act="unmove" data-d="${d}">вернуть</button></div>`;
+    } else if (kind === 'extra') {
+      h += `<div class="banner"><span>Тренировка вне плана</span>${hasSets(day) ? '' : '<button class="link" data-act="unmarkx">отменить</button>'}</div>`;
+    }
+
+    const rs = rows(d);
+    for (const r of rs) {
+      const e = r.e, ref = r.i >= 0 ? `data-i="${r.i}"` : `data-n="${esc(e.n)}"`;
       const lt = lastTime(e.n, d);
-      h += `<div class="card ex">
-        <div class="ex-head" data-act="exmenu" data-i="${i}"><span class="ex-name">${esc(e.n)}</span><span class="ex-dots">⋯</span></div>
+      h += `<div class="card ex${e.s.length ? '' : ' todo'}">
+        <div class="ex-head" data-act="exmenu" ${ref}><span class="ex-name">${esc(e.n)}</span>${r.plan ? '' : (kind === 'plan' ? '<small>вне плана</small>' : '')}<span class="ex-dots">⋯</span></div>
         <div class="sets">
-          ${e.s.map((s, j) => `<button class="chip" data-act="editset" data-i="${i}" data-j="${j}">${chipText(s)}</button>`).join('')}
-          <button class="chip add" data-act="addset" data-i="${i}">+ подход</button>
+          ${e.s.map((s, j) => `<button class="chip" data-act="editset" data-i="${r.i}" data-j="${j}">${chipText(s)}</button>`).join('')}
+          <button class="chip add" data-act="addset" ${ref}>+ подход</button>
         </div>
         ${e.c ? `<div class="ex-comment">${esc(e.c)}</div>` : ''}
         ${lt ? `<div class="hint">Прошлый раз ${P.fmtShort(lt.d)}: ${esc(P.formatSets(lt.e.s))}</div>` : ''}
       </div>`;
-    });
-    if (!day.ex.length) h += templatesHtml(d);
+    }
+    if (kind === 'extra' && !rs.length) h += templatesHtml(d);
     h += `<div class="card"><div class="row">
         <input id="newEx" list="exList" placeholder="Новое упражнение" autocomplete="off" enterkeyhint="done">
         <button class="btn" style="flex:none" data-act="addex">Добавить</button>
-      </div></div>
-      <details class="card"><summary><b>Вставить текстом</b> <small>— как в «Избранном»</small></summary>
+      </div>
+      ${pl ? `<label class="check" style="margin:10px 2px 0"><input type="checkbox" id="addToPlan" checked> Добавлять в план (${WD_EVERY[pl.wd]})</label>` : ''}
+      </div>`;
+    if (kind === 'plan') h += '<button class="btn ghost" style="width:100%;margin-bottom:10px" data-act="moveopen">↪️ Перенести тренировку на другой день</button>';
+    h += `<details class="card"><summary><b>Вставить текстом</b> <small>— как в «Избранном»</small></summary>
         <textarea id="quick" class="mt" placeholder="Жим лежа - 4х8 25кг&#10;Брусья - 4х20&#10;Махи в стороны - 12 15 15 10 6кг"></textarea>
         <button class="btn mt" style="width:100%" data-act="quickadd">Распознать и добавить</button>
         <div id="quickErr" class="err mt"></div>
@@ -169,11 +297,11 @@
     return h;
   }
   function templatesHtml(d) {
-    const ds = Object.keys(S.w).filter((x) => x !== d && S.w[x].ex.some((e) => e.s.length)).sort().reverse().slice(0, 4);
-    if (!ds.length) return '<div class="empty">Добавь упражнение ниже или вставь тренировку текстом.<br>Старые записи можно импортировать во вкладке «Ещё».</div>';
+    const ds = Object.keys(S.w).filter((x) => x !== d && hasSets(S.w[x])).sort().reverse().slice(0, 4);
+    if (!ds.length) return '<div class="empty">Добавь упражнение ниже или вставь тренировку текстом</div>';
     return `<h2>Повторить упражнения из</h2><div class="tmpl">${ds.map((x) => `
       <button class="btn ghost" data-act="tmpl" data-d="${x}">${P.fmtShort(x)} · ${esc(S.w[x].t || P.weekday(x))}<br>
-      <small>${esc(S.w[x].ex.map((e) => e.n).join(', '))}</small></button>`).join('')}</div>`;
+      <small>${esc(S.w[x].ex.filter((e) => e.s.length).map((e) => e.n).join(', '))}</small></button>`).join('')}</div>`;
   }
 
   function stepper(label, id, val, step, mode, ph) {
@@ -198,30 +326,81 @@
         <button class="btn" data-act="setsave">${j != null ? 'Сохранить' : 'Добавить'}</button>
       </div>`);
   }
+  function inPlan(d, name) { const pl = planOf(d); return !!pl && pl.p.ex.some((x) => norm(x) === norm(name)); }
   function openEx(i) {
-    const e = wDay(S.date).ex[i];
+    const d = S.date, e = wDay(d).ex[i], pl = planOf(d), ip = inPlan(d, e.n);
     S.sheet = { type: 'ex', i };
     openSheet(`<h3>Упражнение</h3>
-      <div class="field"><label>Название</label><input id="eN" list="exList" value="${esc(e.n)}" autocomplete="off"></div>
+      <div class="field"><label>Название${ip ? ' <small>(изменится и в плане)</small>' : ''}</label><input id="eN" list="exList" value="${esc(e.n)}" autocomplete="off"></div>
       <div class="field"><label>Заметка</label><textarea id="eC" style="min-height:70px" placeholder="читинг, на пределе, тяжело…">${esc(e.c)}</textarea></div>
       <div class="row">
         <button class="btn ghost" data-act="exup">↑ Выше</button>
         <button class="btn ghost" data-act="exdown">↓ Ниже</button>
-        <button class="btn danger" data-act="exdel">Удалить</button>
+        ${ip ? (e.s.length ? '<button class="btn danger" data-act="exdel">Стереть подходы</button>' : '') : '<button class="btn danger" data-act="exdel">Удалить</button>'}
       </div>
+      ${pl ? (ip
+        ? `<button class="btn danger mt" style="width:100%" data-act="explanrm">Убрать из плана (${WD_EVERY[pl.wd]})</button>`
+        : `<button class="btn ghost mt" style="width:100%" data-act="explanadd">Добавить в план (${WD_EVERY[pl.wd]})</button>`) : ''}
       <button class="btn mt" style="width:100%" data-act="exsave">Сохранить</button>`);
+  }
+  function openMove() {
+    const d = S.date, opts = [];
+    for (let k = -6; k <= 6; k++) { const x = P.addDays(d, k); if (k && isFree(x)) opts.push(x); }
+    S.sheet = { type: 'move' };
+    openSheet(`<h3>Перенести тренировку</h3>
+      <div class="hint" style="margin-bottom:10px">Свободные дни рядом — без тренировки по плану и без записей. Уже записанные подходы перенесутся вместе с тренировкой.</div>
+      ${opts.length ? `<div class="tmpl">${opts.map((x) => `<button class="btn ghost" data-act="moveto" data-d="${x}">${P.WEEKDAYS[wdOf(x)]}, ${P.fmtShort(x)}${relDay(x)}</button>`).join('')}</div>`
+        : '<div class="empty">Рядом нет свободных дней</div>'}`);
+  }
+
+  // ---------- редактор плана ----------
+  function planCard() {
+    return `<h2 id="planCard">План тренировок на неделю</h2><div class="card">
+      ${WD_ORDER.map((wd) => {
+        const p = S.plan.days[wd];
+        return `<div class="fitem" data-act="pday" data-wd="${wd}" style="cursor:pointer"><div class="grow">
+          <div><b>${P.WEEKDAYS[wd]}</b>${p && p.t ? ' · ' + esc(p.t) : ''}</div>
+          <div class="fmac">${p ? (p.ex.length ? esc(p.ex.join(', ')) : 'упражнения не заданы') : 'отдых'}</div></div><span class="ex-dots">›</span></div>`;
+      }).join('')}
+      <button class="btn ghost mt" style="width:100%" data-act="planhist">Заполнить из последней недели тренировок</button>
+    </div>`;
+  }
+  function readPd() { const t = document.getElementById('pT'); if (t && S.pd) S.pd.t = t.value; }
+  function openPlanDay(wd) {
+    if (!S.pd || S.pd.wd !== wd) {
+      const p = S.plan.days[wd];
+      S.pd = { wd, on: !!p, t: p ? p.t : '', ex: p ? p.ex.slice() : [] };
+    }
+    const pd = S.pd;
+    S.sheet = { type: 'plan' };
+    openSheet(`<h3>${P.WEEKDAYS[wd]}</h3>
+      <div class="seg" style="margin-bottom:10px">
+        <button data-act="pon" data-v="1" class="${pd.on ? 'on' : ''}">Тренировка</button>
+        <button data-act="pon" data-v="0" class="${pd.on ? '' : 'on'}">Отдых</button></div>
+      ${pd.on ? `
+        <div class="field"><label class="hint">Название (необязательно)</label><input id="pT" value="${esc(pd.t)}" placeholder="Например: Грудь + бицепс" autocomplete="off"></div>
+        ${pd.ex.map((n, i) => `<div class="fitem"><div class="grow">${esc(n)}</div>
+          <button class="x" data-act="pmv" data-i="${i}" data-v="-1">↑</button><button class="x" data-act="pmv" data-i="${i}" data-v="1">↓</button>
+          <button class="x" data-act="prm" data-i="${i}">✕</button></div>`).join('') || '<div class="hint">Упражнений пока нет</div>'}
+        <div class="row mt"><input id="pNew" list="exList" placeholder="Добавить упражнение" autocomplete="off" enterkeyhint="done">
+          <button class="btn" style="flex:none" data-act="padd">+</button></div>`
+        : '<div class="hint">В этот день вкладка «Тренировка» покажет «День отдыха» с кнопкой отметить тренировку вне плана.</div>'}
+      <button class="btn mt" style="width:100%" data-act="psave">Сохранить</button>`);
   }
 
   function addDays(days, replace) {
     let n = 0;
     for (const pd of days) {
       if (replace && pd.ex.length) {
-        const old = wDay(pd.d);
-        S.w[pd.d] = { t: pd.t || (old && old.t) || '', ex: pd.ex };
+        const old = wDay(pd.d) || {};
+        S.w[pd.d] = Object.assign({}, old, { t: pd.t || old.t || '', ex: pd.ex });
       } else {
         const day = wDay(pd.d, true);
         if (!day.t && pd.t) day.t = pd.t;
-        day.ex.push(...pd.ex);
+        for (const e of pd.ex) {
+          const ex = day.ex.find((x) => norm(x.n) === norm(e.n) && !x.s.length);
+          if (ex) { ex.s = e.s; if (e.c) ex.c = e.c; } else day.ex.push(e);
+        }
       }
       n += pd.ex.length;
       saveDay('w', pd.d);
@@ -430,7 +609,7 @@
     const t = S.set;
     const nW = Object.keys(S.w).filter((d) => !wEmpty(S.w[d])).length;
     const nF = Object.keys(S.f).filter((d) => !fEmpty(S.f[d])).length;
-    return `<h2>Цели на день</h2><div class="card">
+    return planCard() + `<h2>Цели на день</h2><div class="card">
         <div class="grid4">
           <div><label>Ккал</label><input id="setK" inputmode="numeric" value="${t.kcal}"></div>
           <div><label>Белки</label><input id="setP" inputmode="numeric" value="${t.p}"></div>
@@ -488,7 +667,7 @@
     if (ver('6.1')) tg.BackButton.show();
   }
   function closeSheet() {
-    S.sheet = null;
+    S.sheet = null; S.pd = null;
     $('#sheet').hidden = true;
     if (ver('6.1')) tg.BackButton.hide();
   }
@@ -499,15 +678,37 @@
     dnext() { S.date = P.addDays(S.date, 1); S.fEdit = null; render(); },
     dtoday() { S.date = P.today(); S.fEdit = null; render(); },
 
+    goday(el) { S.date = el.dataset.d; S.fEdit = null; closeSheet(); render(); },
+    goplan() { S.tab = 'm'; render(); const c = $('#planCard'); if (c) c.scrollIntoView(); },
+    markx() { wDay(S.date, true).x = 1; saveDay('w', S.date); haptic(); render(); },
+    unmarkx() {
+      const day = wDay(S.date); if (!day || hasSets(day)) return;
+      delete day.x; day.ex = []; saveDay('w', S.date); render();
+    },
+    moveopen() { openMove(); },
+    moveto(el) {
+      const src = S.date, dst = el.dataset.d;
+      moveWorkout(src, dst);
+      closeSheet(); S.date = dst; haptic('ok'); render();
+      toast('Тренировка перенесена на ' + dayLabel(dst));
+    },
+    unmove(el) {
+      const t = el.dataset.d, day = S.w[t]; if (!day || !day.from) return;
+      const origin = day.from;
+      moveWorkout(t, origin);
+      S.date = origin; render(); toast('Тренировка возвращена на ' + dayLabel(origin));
+    },
+
     addex() {
       const inp = $('#newEx'); const n = inp.value.trim();
       if (!n) { inp.focus(); return; }
-      const day = wDay(S.date, true);
-      day.ex.push({ n, s: [], c: '' });
+      const pl = planOf(S.date), cb = $('#addToPlan');
+      if (pl && cb && cb.checked && !inPlan(S.date, n)) { pl.p.ex.push(n); savePlan(); }
+      const i = ensureEx(S.date, n);
       saveDay('w', S.date); render();
-      openSet(day.ex.length - 1, null);
+      openSet(i, null);
     },
-    addset(el) { openSet(+el.dataset.i, null); },
+    addset(el) { openSet(el.dataset.i !== undefined ? +el.dataset.i : ensureEx(S.date, el.dataset.n), null); },
     editset(el) { openSet(+el.dataset.i, +el.dataset.j); },
     step(el) {
       const inp = document.getElementById(el.dataset.id);
@@ -532,23 +733,40 @@
       const { i, j } = S.sheet; wDay(S.date).ex[i].s.splice(j, 1);
       saveDay('w', S.date); closeSheet(); render();
     },
-    exmenu(el) { openEx(+el.dataset.i); },
+    exmenu(el) { openEx(el.dataset.i !== undefined ? +el.dataset.i : ensureEx(S.date, el.dataset.n)); },
     exsave() {
-      const e = wDay(S.date).ex[S.sheet.i];
-      const n = $('#eN').value.trim(); if (n) e.n = n;
+      const d = S.date, e = wDay(d).ex[S.sheet.i];
+      const n = $('#eN').value.trim();
+      if (n && n !== e.n) {
+        const pl = planOf(d);
+        if (pl && inPlan(d, e.n)) { pl.p.ex = pl.p.ex.map((x) => (norm(x) === norm(e.n) ? n : x)); savePlan(); }
+        e.n = n;
+      }
       e.c = $('#eC').value.trim();
-      saveDay('w', S.date); closeSheet(); render();
+      saveDay('w', d); closeSheet(); render();
     },
     exup() { moveEx(-1); }, exdown() { moveEx(1); },
     async exdel() {
-      const day = wDay(S.date), i = S.sheet.i;
-      if (!(await ask(`Удалить «${day.ex[i].n}»?`))) return;
+      const day = wDay(S.date), i = S.sheet.i, ip = inPlan(S.date, day.ex[i].n);
+      if (!(await ask(ip ? `Стереть подходы «${day.ex[i].n}» за этот день?` : `Удалить «${day.ex[i].n}»?`))) return;
       day.ex.splice(i, 1); saveDay('w', S.date); closeSheet(); render();
+    },
+    async explanrm() {
+      const d = S.date, pl = planOf(d), e = wDay(d).ex[S.sheet.i];
+      if (!(await ask(`Убрать «${e.n}» из плана (${WD_EVERY[pl.wd]})? Записанные подходы останутся.`))) return;
+      pl.p.ex = pl.p.ex.filter((x) => norm(x) !== norm(e.n)); savePlan();
+      if (!e.s.length && !e.c) { wDay(d).ex.splice(S.sheet.i, 1); saveDay('w', d); }
+      closeSheet(); render();
+    },
+    explanadd() {
+      const d = S.date, pl = planOf(d), e = wDay(d).ex[S.sheet.i];
+      if (!inPlan(d, e.n)) { pl.p.ex.push(e.n); savePlan(); }
+      closeSheet(); render(); toast('Добавлено в план');
     },
     tmpl(el) {
       const src = S.w[el.dataset.d], day = wDay(S.date, true);
       if (!day.t) day.t = src.t;
-      for (const e of src.ex) day.ex.push({ n: e.n, s: [], c: '' });
+      for (const e of src.ex) if (e.s.length) day.ex.push({ n: e.n, s: [], c: '' });
       saveDay('w', S.date); render();
     },
     quickadd() {
@@ -563,6 +781,39 @@
         $('#quick').closest('details').open = true;
       }
       if (n) { haptic('ok'); toast(`Добавлено упражнений: ${n}`); }
+    },
+
+    // план
+    pday(el) { S.pd = null; openPlanDay(+el.dataset.wd); },
+    pon(el) { readPd(); S.pd.on = el.dataset.v === '1'; openPlanDay(S.pd.wd); },
+    padd() {
+      readPd();
+      const inp = $('#pNew'), n = inp.value.trim();
+      if (!n) { inp.focus(); return; }
+      if (!S.pd.ex.some((x) => norm(x) === norm(n))) S.pd.ex.push(n);
+      openPlanDay(S.pd.wd);
+      const ni = $('#pNew'); if (ni) ni.focus();
+    },
+    prm(el) { readPd(); S.pd.ex.splice(+el.dataset.i, 1); openPlanDay(S.pd.wd); },
+    pmv(el) {
+      readPd();
+      const i = +el.dataset.i, j = i + +el.dataset.v, ex = S.pd.ex;
+      if (j >= 0 && j < ex.length) [ex[i], ex[j]] = [ex[j], ex[i]];
+      openPlanDay(S.pd.wd);
+    },
+    psave() {
+      readPd();
+      const pd = S.pd;
+      if (pd.on) S.plan.days[pd.wd] = { t: pd.t.trim(), ex: pd.ex };
+      else delete S.plan.days[pd.wd];
+      savePlan(); closeSheet(); haptic('ok'); render();
+    },
+    async planhist() {
+      const days = planFromDates(lastWeekDates(Object.keys(S.w)));
+      if (!Object.keys(days).length) { toast('Нет записанных тренировок'); return; }
+      if (!planEmpty() && !(await ask('Текущий план будет заменён тренировками последней недели. Продолжить?'))) return;
+      S.plan.days = days; savePlan(); render();
+      toast('План: ' + WD_ORDER.filter((wd) => days[wd]).map((wd) => WD_SHORT[wd]).join(', '));
     },
 
     // питание
@@ -623,8 +874,18 @@
       const r = P.parseText(text, P.today());
       const n = addDays(r.days, true);
       const ds = r.days.filter((d) => d.ex.length).map((d) => P.fmtShort(d.d));
+      let planMsg = '';
+      const adj = r.days.filter((d) => d.orig);
+      if (adj.length) planMsg += `<div class="mt hint">Даты поправлены по дню недели в заголовке: ${adj.map((d) => `${P.fmtShort(d.orig)} → ${P.fmtShort(d.d)} (${esc(d.t)})`).join(', ')}</div>`;
+      if (planEmpty()) {
+        const days = planFromDates(lastWeekDates(r.days.map((d) => d.d)));
+        if (Object.keys(days).length) {
+          S.plan.days = days; savePlan();
+          planMsg += `<div class="mt">📅 План на неделю создан из импорта: ${WD_ORDER.filter((wd) => days[wd]).map((wd) => WD_SHORT[wd]).join(', ')}. Поправить можно выше.</div>`;
+        }
+      }
       render();
-      $('#impRes').innerHTML = `<div>✅ Дней: ${ds.length}, упражнений: ${n}${ds.length ? ` <small>(${ds.join(', ')})</small>` : ''}</div>`
+      $('#impRes').innerHTML = `<div>✅ Дней: ${ds.length}, упражнений: ${n}${ds.length ? ` <small>(${ds.join(', ')})</small>` : ''}</div>` + planMsg
         + (r.errors.length ? `<div class="err mt">Не распознано (${r.errors.length}):\n${esc(r.errors.join('\n'))}</div>` : '');
       if (n) haptic('ok');
     },
@@ -672,7 +933,7 @@
     },
   };
 
-  function backupObj() { return { v: 1, exported: new Date().toISOString(), w: S.w, f: S.f, lib: S.lib, set: S.set }; }
+  function backupObj() { return { v: 1, exported: new Date().toISOString(), w: S.w, f: S.f, lib: S.lib, set: S.set, plan: S.plan }; }
   function backupAge() {
     let d = null; try { d = localStorage.getItem(BACKUP_KEY); } catch (e) { /* ignore */ }
     if (!d) return 'Бэкап ещё не делался';
@@ -684,10 +945,11 @@
       if (!(await ask('Все текущие данные будут заменены бэкапом. Продолжить?'))) return;
       const touched = new Set([...Object.keys(S.w).map((d) => 'w' + d), ...Object.keys(S.f).map((d) => 'f' + d)]);
       S.w = data.w; S.f = data.f; S.lib = Array.isArray(data.lib) ? data.lib : []; S.set = Object.assign({}, DEF_SET, data.set);
+      S.plan = data.plan && data.plan.days ? { days: data.plan.days } : { days: {} };
       Object.keys(S.w).forEach((d) => touched.add('w' + d));
       Object.keys(S.f).forEach((d) => touched.add('f' + d));
       touched.forEach((x) => saveDay(x[0], x.slice(1)));
-      saveLib(); saveSettings(); flushAll();
+      saveLib(); saveSettings(); savePlan(); flushAll();
       S.out = ''; toast('Данные восстановлены'); render();
   }
   Object.assign(actions, {
@@ -700,10 +962,19 @@
   });
 
   function moveEx(dir) {
-    const day = wDay(S.date), i = S.sheet.i, j = i + dir;
-    if (j < 0 || j >= day.ex.length) return;
-    [day.ex[i], day.ex[j]] = [day.ex[j], day.ex[i]];
-    S.sheet.i = j; saveDay('w', S.date); render(); haptic();
+    const d = S.date, day = wDay(d), i = S.sheet.i, e = day.ex[i], pl = planOf(d);
+    if (pl && inPlan(d, e.n)) {
+      const ex = pl.p.ex, k = ex.findIndex((x) => norm(x) === norm(e.n)), j = k + dir;
+      if (j < 0 || j >= ex.length) return;
+      [ex[k], ex[j]] = [ex[j], ex[k]]; savePlan();
+    } else {
+      const extra = rows(d).filter((r) => !r.plan).map((r) => r.i), k = extra.indexOf(i), j = k + dir;
+      if (k < 0 || j < 0 || j >= extra.length) return;
+      const a2 = extra[k], b2 = extra[j];
+      [day.ex[a2], day.ex[b2]] = [day.ex[b2], day.ex[a2]];
+      S.sheet.i = b2; saveDay('w', d);
+    }
+    render(); haptic();
   }
   function readFood() {
     if (!S.fd) return;
@@ -763,6 +1034,7 @@
   document.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Enter') return;
     if (ev.target.id === 'newEx') { ev.preventDefault(); actions.addex(); }
+    else if (ev.target.id === 'pNew') { ev.preventDefault(); actions.padd(); }
     else if (S.sheet && S.sheet.type === 'set' && ev.target.tagName === 'INPUT') { ev.preventDefault(); actions.setsave(); }
   });
 
@@ -799,6 +1071,7 @@
       else if (/^f_\d{6}$/.test(k)) Object.assign(S.f, v);
       else if (k === 'lib' && Array.isArray(v)) S.lib = v;
       else if (k === 'set') S.set = Object.assign({}, DEF_SET, v);
+      else if (k === 'plan' && v && v.days) S.plan = { days: v.days };
     }
     render();
   }
