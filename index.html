@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <title>Дневник тренировок</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="app"><div class="loading">Загрузка…</div></main>
+
+  <nav class="tabs">
+    <button data-tab="w"><i>🏋️</i><span>Тренировка</span></button>
+    <button data-tab="f"><i>🍽️</i><span>Питание</span></button>
+    <button data-tab="h"><i>📈</i><span>История</span></button>
+    <button data-tab="m"><i>⚙️</i><span>Ещё</span></button>
+  </nav>
+
+  <div id="sheet" class="sheet" hidden>
+    <div class="sheet-bg" data-act="sheetclose"></div>
+    <div class="sheet-body" id="sheetBody"></div>
+  </div>
+  <div id="toast" class="toast"></div>
+
+  <datalist id="exList"></datalist>
+  <datalist id="foodList"></datalist>
+
+  <script src="parser.js"></script>
+  <script src="storage.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
