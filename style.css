@@ -10,7 +10,8 @@
   --line: color-mix(in srgb, var(--hint) 25%, transparent);
   --soft: color-mix(in srgb, var(--accent) 12%, var(--card));
   --ok: #30a46c;
-  --bottom: env(safe-area-inset-bottom, 0px);
+  --top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+  --bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
 }
 @media (prefers-color-scheme: dark) {
   :root:not(.tg) {
@@ -20,7 +21,7 @@
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; background: var(--bg); color: var(--text); }
 body { font: 15px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-main { padding: 10px 12px calc(84px + var(--bottom)); max-width: 640px; margin: 0 auto; }
+main { padding: calc(10px + var(--top)) 12px calc(84px + var(--bottom)); max-width: 640px; margin: 0 auto; }
 .loading { padding: 40px; text-align: center; color: var(--hint); }
 button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
 input, textarea, select {
@@ -126,8 +127,8 @@ table.t td:first-child { white-space: nowrap; color: var(--hint); width: 1%; }
 .sheet[hidden] { display: none; }
 .sheet-bg { position: absolute; inset: 0; background: rgba(0,0,0,.4); }
 .sheet-body {
-  position: absolute; left: 0; right: 0; bottom: 0; background: var(--card); border-radius: 18px 18px 0 0;
-  padding: 16px 14px calc(16px + var(--bottom)); max-height: 85vh; overflow: auto; max-width: 640px; margin: 0 auto;
+  position: absolute; left: 0; right: 0; bottom: 0; max-height: calc(85vh - var(--top)); background: var(--card); border-radius: 18px 18px 0 0;
+  padding: 16px 14px calc(16px + var(--bottom)); overflow: auto; max-width: 640px; margin: 0 auto;
   animation: up .18s ease-out;
 }
 @keyframes up { from { transform: translateY(30px); opacity: .5; } }

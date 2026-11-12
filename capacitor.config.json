@@ -1,0 +1,14 @@
+{
+  "appId": "kz.a1bol.gymlog",
+  "appName": "Gym Log",
+  "webDir": "www",
+  "android": {
+    "backgroundColor": "#f1f2f6"
+  },
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "css",
+      "initialViewportFitValueHint": "cover"
+    }
+  }
+}

@@ -4,6 +4,15 @@
   const P = window.GymParser;
   const Store = window.GymStore;
   const app = document.getElementById('app');
+  const Cap = window.Capacitor;
+  const NATIVE = !!(Cap && Cap.isNativePlatform && Cap.isNativePlatform());
+  const Native = NATIVE && window.capacitorExports ? {
+    App: capacitorExports.registerPlugin('App'),
+    Share: capacitorExports.registerPlugin('Share'),
+    Filesystem: capacitorExports.registerPlugin('Filesystem'),
+  } : null;
+  const IN_TG = !!(tg && tg.initData);
+  const BACKUP_KEY = 'gymlog-meta:lastBackup';
 
   const $ = (s) => document.querySelector(s);
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -439,11 +448,14 @@
       </div>
 
       <h2>Экспорт и бэкап</h2><div class="card">
-        <div class="row"><button class="btn ghost" data-act="exptext">Тренировки текстом</button><button class="btn ghost" data-act="expjson">Бэкап (JSON)</button></div>
+        ${IN_TG ? '' : `<button class="btn" style="width:100%" data-act="backupfile">${NATIVE ? '💾 Сохранить бэкап (файл)' : '💾 Скачать бэкап (файл)'}</button>
+        <div class="hint mt">${backupAge()}</div>`}
+        <div class="row mt"><button class="btn ghost" data-act="exptext">Тренировки текстом</button><button class="btn ghost" data-act="expjson">Бэкап текстом</button></div>
         ${S.out ? `<textarea id="out" class="mt" readonly>${esc(S.out)}</textarea><button class="btn mt" style="width:100%" data-act="copy">Скопировать</button>` : ''}
         <details class="mt"><summary class="hint">Восстановить из бэкапа</summary>
-          <textarea id="restore" class="mt" placeholder='{"v":1,...}'></textarea>
-          <button class="btn danger mt" style="width:100%" data-act="restore">Заменить все данные бэкапом</button>
+          <label class="btn ghost mt" style="display:block">📂 Выбрать файл бэкапа<input type="file" id="restoreFile" accept=".json,application/json,text/plain" hidden></label>
+          <textarea id="restore" class="mt" placeholder='…или вставь текст бэкапа {"v":1,...}'></textarea>
+          <button class="btn danger mt" style="width:100%" data-act="restore">Заменить все данные текстом бэкапа</button>
         </details>
       </div>
 
@@ -453,7 +465,9 @@
       </div>
 
       <h2>Хранилище</h2><div class="card">
-        <div>${S.source === 'cloud' ? '☁️ Облако Telegram — данные доступны на всех твоих устройствах' : '📱 Только это устройство' + (tg && tg.initData ? '' : ' (приложение открыто не из Telegram)')}</div>
+        <div>${S.source === 'cloud' ? '☁️ Облако Telegram — данные доступны на всех твоих устройствах'
+          : NATIVE ? '📱 Данные хранятся в телефоне. Удаление приложения или «Очистить данные» сотрёт их — периодически сохраняй бэкап.'
+          : '📱 Только это устройство' + (IN_TG ? '' : ' (открыто не из Telegram)')}</div>
         <div class="hint mt">Дней с тренировками: ${nW} · с питанием: ${nF}${Store.pending ? ` · не синхронизировано: ${Store.pending}` : ''}</div>
         ${S.loadError || Store.lastError ? `<div class="err mt">${esc(S.loadError || Store.lastError)}</div>` : ''}
       </div>`;
@@ -621,7 +635,7 @@
     },
     expjson() {
       flushAll();
-      S.out = JSON.stringify({ v: 1, exported: new Date().toISOString(), w: S.w, f: S.f, lib: S.lib, set: S.set });
+      S.out = JSON.stringify(backupObj());
       render();
     },
     async copy() {
@@ -635,6 +649,37 @@
     async restore() {
       let data;
       try { data = JSON.parse($('#restore').value); } catch (e) { toast('Это не похоже на бэкап'); return; }
+      await restoreData(data);
+    },
+    async backupfile() {
+      flushAll();
+      const json = JSON.stringify(backupObj());
+      const name = 'gym-log-backup-' + P.today() + '.json';
+      try {
+        if (Native) {
+          const r = await Native.Filesystem.writeFile({ path: name, data: json, directory: 'CACHE', encoding: 'utf8' });
+          try { await Native.Share.share({ title: 'Бэкап дневника', files: [r.uri] }); }
+          catch (e) { if (!/cancel/i.test(String(e && e.message || e))) throw e; return; }
+        } else {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+          a.download = name; document.body.appendChild(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+        }
+        try { localStorage.setItem(BACKUP_KEY, P.today()); } catch (e) { /* ignore */ }
+        toast('Бэкап готов'); render();
+      } catch (e) { toast('Не удалось: ' + (e && e.message || e)); }
+    },
+  };
+
+  function backupObj() { return { v: 1, exported: new Date().toISOString(), w: S.w, f: S.f, lib: S.lib, set: S.set }; }
+  function backupAge() {
+    let d = null; try { d = localStorage.getItem(BACKUP_KEY); } catch (e) { /* ignore */ }
+    if (!d) return 'Бэкап ещё не делался';
+    const days = Math.round((P.fromISO(P.today()) - P.fromISO(d)) / 864e5);
+    return 'Последний бэкап: ' + (days === 0 ? 'сегодня' : days === 1 ? 'вчера' : days + ' дн. назад');
+  }
+  async function restoreData(data) {
       if (!data || data.v !== 1 || typeof data.w !== 'object' || typeof data.f !== 'object') { toast('Это не похоже на бэкап'); return; }
       if (!(await ask('Все текущие данные будут заменены бэкапом. Продолжить?'))) return;
       const touched = new Set([...Object.keys(S.w).map((d) => 'w' + d), ...Object.keys(S.f).map((d) => 'f' + d)]);
@@ -644,14 +689,15 @@
       touched.forEach((x) => saveDay(x[0], x.slice(1)));
       saveLib(); saveSettings(); flushAll();
       S.out = ''; toast('Данные восстановлены'); render();
-    },
+  }
+  Object.assign(actions, {
     async libdel(el) {
       const i = +el.dataset.i;
       if (!(await ask(`Удалить «${S.lib[i].n}» из списка продуктов?`))) return;
       S.lib.splice(i, 1); saveLib(); render();
     },
     sheetclose() { closeSheet(); },
-  };
+  });
 
   function moveEx(dir) {
     const day = wDay(S.date), i = S.sheet.i, j = i + dir;
@@ -702,6 +748,14 @@
 
   document.addEventListener('change', (ev) => {
     const t = ev.target;
+    if (t.id === 'restoreFile' && t.files && t.files[0]) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        let data; try { data = JSON.parse(reader.result); } catch (e) { toast('Это не похоже на бэкап'); return; }
+        restoreData(data);
+      };
+      reader.readAsText(t.files[0]); t.value = '';
+    }
     if (t.id === 'dPick' && t.value) { S.date = t.value; S.fEdit = null; render(); }
     if (t.id === 'statEx') { S.statEx = t.value; render(); }
   });
@@ -712,8 +766,25 @@
     else if (S.sheet && S.sheet.type === 'set' && ev.target.tagName === 'INPUT') { ev.preventDefault(); actions.setsave(); }
   });
 
+  // если приложение висело в фоне и наступил новый день — переключаемся на сегодня
+  let lastToday = P.today();
+  function onResume() {
+    const t = P.today();
+    if (t !== lastToday) { if (S.date === lastToday) { S.date = t; S.fEdit = null; } lastToday = t; render(); }
+  }
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) onResume(); });
+
   // ---------- старт ----------
   async function init() {
+    if (Native) {
+      Native.App.addListener('backButton', () => {
+        if (S.sheet) closeSheet();
+        else if (S.tab !== 'w') { S.tab = 'w'; S.out = ''; render(); window.scrollTo(0, 0); }
+        else Native.App.exitApp();
+      });
+      Native.App.addListener('resume', onResume);
+    }
+    try { if (!IN_TG && navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) { /* ignore */ }
     if (tg) {
       document.documentElement.classList.add('tg');
       try { tg.ready(); tg.expand(); } catch (e) { /* ignore */ }
